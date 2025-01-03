@@ -1,0 +1,159 @@
+!pip install ray
+import time
+import matplotlib.pyplot as plt
+import numpy as np
+import ray
+from sklearn.datasets import load_diabetes
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error
+
+# Initialize Ray
+ray.init(ignore_reinit_error=True)
+
+# Load and preprocess the data
+data = load_diabetes()
+X, y = data.data, data.target
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
+# Results dictionary
+results = {}
+
+# 1. Scalability with Data Size
+@ray.remote
+def train_model(X, y):
+    model = LinearRegression()
+    model.fit(X, y)
+    return mean_squared_error(y, model.predict(X))
+
+def ray_scalability_experiment():
+    dataset_sizes = [int(len(X_train) * p) for p in [0.2, 0.4, 0.6, 0.8, 1.0]]
+    training_times = []
+
+    for size in dataset_sizes:
+        X_sample, y_sample = X_train[:size], y_train[:size]
+
+        start_time = time.time()
+        ray.get(train_model.remote(X_sample, y_sample))
+        training_times.append(time.time() - start_time)
+
+    plt.figure()
+    plt.plot([p * 100 for p in [0.2, 0.4, 0.6, 0.8, 1.0]], training_times, label="Training Time")
+    plt.xlabel("Dataset Size (%)")
+    plt.ylabel("Training Time (seconds)")
+    plt.title("Scalability with Data Size - Ray")
+    plt.legend()
+    plt.show()
+
+    results['Scalability'] = training_times
+
+# 2. Fault Tolerance
+@ray.remote
+def faulty_train_model(X, y, simulate_failure=False):
+    if simulate_failure:
+        raise RuntimeError("Simulated failure")
+    model = LinearRegression()
+    model.fit(X, y)
+    return mean_squared_error(y, model.predict(X))
+
+def ray_fault_tolerance_experiment():
+    X_sample, y_sample = X_train[:int(len(X_train) * 0.8)], y_train[:int(len(y_train) * 0.8)]
+
+    start_time = time.time()
+    try:
+        ray.get(faulty_train_model.remote(X_sample, y_sample, simulate_failure=True))
+    except RuntimeError:
+        # Retry after failure
+        ray.get(faulty_train_model.remote(X_sample, y_sample, simulate_failure=False))
+    elapsed_time = time.time() - start_time
+
+    plt.figure()
+    plt.bar(["Training with Fault"], [elapsed_time], color='orange', label="Time with Fault")
+    plt.ylabel("Training Time (seconds)")
+    plt.title("Fault Tolerance - Ray")
+    plt.legend()
+    plt.show()
+
+    results['Fault Tolerance'] = elapsed_time
+
+# 3. Communication Overhead
+@ray.remote
+def distributed_training(X, y):
+    model = LinearRegression()
+    model.fit(X, y)
+    return model
+
+def ray_communication_overhead_experiment():
+    # Simulate splitting data across workers
+    split_X = np.array_split(X_train, 4)
+    split_y = np.array_split(y_train, 4)
+
+    # Measure synchronous training
+    start_time = time.time()
+    models = ray.get([distributed_training.remote(split_X[i], split_y[i]) for i in range(4)])
+    sync_time = time.time() - start_time
+
+    # Measure asynchronous training
+    start_time = time.time()
+    refs = [distributed_training.remote(split_X[i], split_y[i]) for i in range(4)]
+    models = ray.get(refs)
+    async_time = time.time() - start_time
+
+    plt.figure()
+    plt.bar(["Synchronous", "Asynchronous"], [sync_time, async_time], color=['blue', 'green'])
+    plt.ylabel("Training Time (seconds)")
+    plt.title("Communication Overhead - Ray")
+    plt.show()
+
+    results['Communication'] = {'Synchronous': sync_time, 'Asynchronous': async_time}
+
+# 4. Ease of Use and Setup
+def ray_ease_of_use_experiment():
+    start_time = time.time()
+
+    # Simulate environment setup
+    ray.init(ignore_reinit_error=True)
+    elapsed_time = time.time() - start_time
+
+    plt.figure()
+    plt.bar(["Environment Setup"], [elapsed_time], color='purple', label="Setup Time")
+    plt.ylabel("Setup Time (seconds)")
+    plt.title("Ease of Setup - Ray")
+    plt.legend()
+    plt.show()
+
+    results['Ease of Setup'] = elapsed_time
+
+# General Graph for Ray
+def general_ray_graph():
+    aspects = ['Scalability', 'Fault Tolerance', 'Communication (Sync)', 'Communication (Async)', 'Ease of Setup']
+    values = [
+        sum(results['Scalability']) if 'Scalability' in results else 0,
+        results['Fault Tolerance'] if 'Fault Tolerance' in results else 0,
+        results['Communication']['Synchronous'] if 'Communication' in results else 0,
+        results['Communication']['Asynchronous'] if 'Communication' in results else 0,
+        results['Ease of Setup'] if 'Ease of Setup' in results else 0
+    ]
+
+    plt.figure()
+    plt.bar(aspects, values, color=['red', 'orange', 'blue', 'green', 'purple'])
+    plt.ylabel("Time/Performance (seconds)")
+    plt.title("Ray - General Framework Overview")
+    plt.xticks(rotation=45)
+    plt.show()
+
+# Run all experiments
+ray_scalability_experiment()
+ray_fault_tolerance_experiment()
+ray_communication_overhead_experiment()
+ray_ease_of_use_experiment()
+general_ray_graph()
+
+# Print results
+print("Results Summary:")
+for key, value in results.items():
+    print(f"{key}: {value}")
